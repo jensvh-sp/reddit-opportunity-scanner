@@ -317,6 +317,15 @@
       <input id="competitors" type="text" placeholder="e.g. Obsidian, Roam, Logseq" />
       <small style="color: var(--muted); font-size: 12px;">Comma-separated</small>
     </div>
+    <div class="form-group">
+      <label>Time Range</label>
+      <select id="timeRange">
+        <option value="week">Past week</option>
+        <option value="month" selected>Past month</option>
+        <option value="year">Past year</option>
+        <option value="all">All time</option>
+      </select>
+    </div>
 
     <button class="btn-scan" id="scanBtn" onclick="startScan()">
       <span id="btnText">Scan Reddit</span>
@@ -394,6 +403,7 @@
     const language = document.getElementById('language').value;
     const description = document.getElementById('description').value.trim();
     const competitors = document.getElementById('competitors').value.trim();
+    const timeRange = document.getElementById('timeRange').value;
 
     showState('loading');
     const btn = document.getElementById('scanBtn');
@@ -404,7 +414,7 @@
       const res = await fetch('/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brand, language, description, competitors })
+        body: JSON.stringify({ brand, language, description, competitors, timeRange })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Scan failed');

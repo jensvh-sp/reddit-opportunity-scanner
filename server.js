@@ -62,8 +62,8 @@ Return ONLY a JSON array of strings, e.g.: ["query one", "query two", ...]`;
 
 // ─── Reddit fetch — direct API (works locally + cloud with OAuth) ─────────────
 
-async function fetchRedditDirect(query) {
-  const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=new&limit=10&type=link`;
+async function fetchRedditDirect(query, timeRange = "month") {
+  const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=new&t=${timeRange}&limit=10&type=link`;
   try {
     const res = await fetch(url, {
       headers: {
@@ -120,8 +120,8 @@ function parseRedditRSS(xml) {
   }).filter((p) => p.title && p.permalink);
 }
 
-async function fetchRedditViaRSS(query) {
-  const url = `https://www.reddit.com/search.rss?q=${encodeURIComponent(query)}&sort=new&limit=10&type=link`;
+async function fetchRedditViaRSS(query, timeRange = "month") {
+  const url = `https://www.reddit.com/search.rss?q=${encodeURIComponent(query)}&sort=new&t=${timeRange}&limit=10&type=link`;
   try {
     const res = await fetch(url, {
       headers: {
@@ -181,10 +181,10 @@ async function fetchRedditViaSerper(query) {
 
 let redditMode = "direct"; // "direct" | "rss" | "serper"
 
-async function fetchRedditResults(query) {
+async function fetchRedditResults(query, timeRange = "month") {
   // Try direct JSON API
   if (redditMode === "direct") {
-    const direct = await fetchRedditDirect(query);
+    const direct = await fetchRedditDirect(query, timeRange);
     if (direct !== null) return direct;
     console.log("Reddit JSON API blocked — trying RSS feed");
     redditMode = "rss";
@@ -192,7 +192,7 @@ async function fetchRedditResults(query) {
 
   // Try RSS feed
   if (redditMode === "rss") {
-    const rss = await fetchRedditViaRSS(query);
+    const rss = await fetchRedditViaRSS(query, timeRange);
     if (rss !== null) return rss;
     console.log("Reddit RSS also blocked — trying Serper");
     redditMode = "serper";
@@ -312,6 +312,7 @@ app.post("/scan", async (req, res) => {
     language = "en",
     description = "",
     competitors = "",
+    timeRange = "month",
   } = req.body;
 
   if (!brand) return res.status(400).json({ error: "Brand name is required" });
@@ -331,7 +332,7 @@ app.post("/scan", async (req, res) => {
 
     // 2. Fetch Reddit results in parallel
     const fetchResults = await Promise.allSettled(
-      queries.slice(0, 10).map((q) => fetchRedditResults(q))
+      queries.slice(0, 10).map((q) => fetchRedditResults(q, timeRange))
     );
     const allPosts = fetchResults.flatMap((r) =>
       r.status === "fulfilled" ? r.value : []
