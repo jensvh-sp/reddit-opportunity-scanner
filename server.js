@@ -47,61 +47,84 @@ function buildQueries(brand, description, competitors) {
   return [...new Set(queries)]; // deduplicate
 }
 
-// ─── Reddit OAuth ────────────────────────────────────────────────────────────
+// ─── Reddit fetch via Serper.dev (Google Search) ─────────────────────────────
+// Reddit blocks all cloud IPs. We use Serper.dev to search Google for
+// site:reddit.com results, then fetch each post's JSON from Reddit directly.
+// Serper.dev: free 2500 queries/month — serper.dev
 
-let redditToken = null;
-let redditTokenExpiry = 0;
+async function searchSerper(query) {
+  const apiKey = process.env.SERPER_API_KEY;
+  if (!apiKey) return [];
 
-async function getRedditToken() {
-  if (redditToken && Date.now() < redditTokenExpiry) return redditToken;
-
-  const clientId = process.env.REDDIT_CLIENT_ID;
-  const clientSecret = process.env.REDDIT_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return null;
-
-  const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
-  const res = await fetch("https://www.reddit.com/api/v1/access_token", {
+  const res = await fetch("https://google.serper.dev/search", {
     method: "POST",
     headers: {
-      Authorization: `Basic ${credentials}`,
-      "User-Agent": "RedditOpportunityScanner/1.0",
-      "Content-Type": "application/x-www-form-urlencoded",
+      "X-API-KEY": apiKey,
+      "Content-Type": "application/json",
     },
-    body: "grant_type=client_credentials",
+    body: JSON.stringify({
+      q: `site:reddit.com ${query}`,
+      num: 8,
+      gl: "us",
+    }),
   });
 
-  if (!res.ok) return null;
+  if (!res.ok) return [];
   const data = await res.json();
-  redditToken = data.access_token;
-  redditTokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
-  return redditToken;
+
+  // Extract Reddit thread URLs from organic results
+  return (data.organic || [])
+    .map((r) => r.link)
+    .filter((u) => u && u.includes("reddit.com/r/") && u.includes("/comments/"))
+    .map((u) => u.split("?")[0].replace(/\/$/, ""));
 }
 
-// ─── Reddit fetch ────────────────────────────────────────────────────────────
+async function fetchRedditPost(permalink) {
+  try {
+    const res = await fetch(`${permalink}.json?limit=5`, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "application/json",
+      },
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json?.[0]?.data?.children?.[0]?.data || null;
+  } catch {
+    return null;
+  }
+}
 
-async function fetchRedditResults(query, language) {
-  const token = await getRedditToken();
+async function fetchRedditResultsDirect(query) {
+  // Direct Reddit search — works locally, blocked on cloud IPs
+  const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=new&limit=10&type=link`;
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "RedditOpportunityScanner/1.0" },
+    });
+    if (!res.ok) return null; // null signals "blocked"
+    const json = await res.json();
+    return (json?.data?.children || []).map((c) => c.data);
+  } catch {
+    return null;
+  }
+}
 
-  // Use OAuth API if credentials available, otherwise fall back to public API
-  const baseUrl = token
-    ? "https://oauth.reddit.com/search.json"
-    : "https://www.reddit.com/search.json";
+async function fetchRedditResults(query) {
+  try {
+    // 1. Try direct Reddit API first (works locally)
+    const direct = await fetchRedditResultsDirect(query);
+    if (direct !== null) return direct;
 
-  const url = `${baseUrl}?q=${encodeURIComponent(query)}&sort=new&limit=10&type=link`;
-
-  const headers = {
-    "User-Agent": "RedditOpportunityScanner/1.0",
-    "Accept-Language": language || "en",
-  };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const res = await fetch(url, { headers });
-  if (!res.ok) {
-    console.warn(`Reddit fetch failed for query "${query}": ${res.status}`);
+    // 2. Fallback: Serper.dev → individual post JSON
+    const permalinks = await searchSerper(query);
+    const posts = await Promise.all(permalinks.map(fetchRedditPost));
+    return posts.filter(Boolean);
+  } catch (err) {
+    console.warn(`Fetch failed for query "${query}":`, err.message);
     return [];
   }
-  const json = await res.json();
-  return (json?.data?.children || []).map((c) => c.data);
 }
 
 // ─── Deduplication ───────────────────────────────────────────────────────────
@@ -222,7 +245,7 @@ app.post("/scan", async (req, res) => {
 
     // 2. Fetch Reddit results in parallel (max 8 queries to stay fast)
     const fetchResults = await Promise.allSettled(
-      queries.slice(0, 8).map((q) => fetchRedditResults(q, language))
+      queries.slice(0, 8).map((q) => fetchRedditResults(q))
     );
     const allPosts = fetchResults.flatMap((r) =>
       r.status === "fulfilled" ? r.value : []
@@ -236,7 +259,9 @@ app.post("/scan", async (req, res) => {
         results: [],
         subreddits: [],
         queriesRun: queries.slice(0, 8).length,
-        warning: "Reddit returned no results. This usually means Reddit is blocking requests from this server's IP. Please add REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET environment variables (see README).",
+        warning: !process.env.SERPER_API_KEY
+          ? "Reddit is blocking requests from this server. Add a free SERPER_API_KEY (serper.dev) to your Vercel environment variables to fix this."
+          : "No Reddit threads found for this brand. Try a broader brand name or add more competitors.",
       });
     }
 
