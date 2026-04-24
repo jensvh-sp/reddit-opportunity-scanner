@@ -12,119 +12,126 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// ─── Query generation ────────────────────────────────────────────────────────
+// ─── Claude-powered query generation ─────────────────────────────────────────
+// Instead of dumb keyword extraction, we ask Claude to generate smart queries:
+// brand mention queries + high-intent opportunity queries in the right language.
 
-function buildQueries(brand, description, competitors) {
-  const queries = [
-    `"${brand}"`,
-    `"${brand}" review`,
-    `is "${brand}" legit`,
-    `"${brand}" alternative`,
-    `"${brand}" vs`,
-  ];
+async function generateQueries(brand, description, competitors, language) {
+  const prompt = `You are a Reddit marketing expert. Generate Reddit search queries to find:
+1. Threads that mention the brand (brand awareness)
+2. Threads where someone has a problem or need that this brand solves (opportunities to engage)
+3. Threads comparing or asking about competitors
 
-  for (const c of competitors) {
-    queries.push(`alternative to "${c}"`);
-    queries.push(`"${c}" vs`);
-    queries.push(`"${c}" alternative`);
+Brand: "${brand}"
+Description: ${description || "not provided"}
+Competitors: ${competitors.length ? competitors.join(", ") : "none"}
+Language: ${language}
+
+Rules:
+- Generate exactly 12 queries total
+- Mix brand queries (4) + intent/opportunity queries (5) + competitor queries (3)
+- Intent queries should reflect real problems/needs that ${brand} solves — NOT include the brand name
+- Write queries as a real user would type them on Reddit (natural language, no quotes needed)
+- Write queries in the specified language (${language})
+- Keep queries short: 2-5 words each
+- For intent queries: think about what someone would search when they NEED what this brand offers
+
+Return ONLY a JSON array of strings, e.g.: ["query one", "query two", ...]`;
+
+  const message = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 512,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  const raw = message.content[0].text.trim();
+  try {
+    const cleaned = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+    return JSON.parse(cleaned);
+  } catch {
+    console.error("Failed to parse query list, using fallbacks");
+    // Fallback hardcoded queries
+    return [
+      `"${brand}"`,
+      `"${brand}" review`,
+      `"${brand}" ervaringen`,
+      ...competitors.map((c) => `${c} alternatief`),
+    ];
   }
-
-  // Intent queries derived from description keywords
-  if (description) {
-    const words = description
-      .toLowerCase()
-      .replace(/[^\w\s]/g, "")
-      .split(/\s+/)
-      .filter((w) => w.length > 4)
-      .slice(0, 3);
-    for (const kw of words) {
-      queries.push(`best ${kw} tool`);
-      queries.push(`looking for ${kw}`);
-      queries.push(`recommendations ${kw}`);
-    }
-  }
-
-  return [...new Set(queries)]; // deduplicate
 }
 
-// ─── Reddit fetch via Serper.dev (Google Search) ─────────────────────────────
-// Reddit blocks all cloud IPs. We use Serper.dev to search Google for
-// site:reddit.com results, then fetch each post's JSON from Reddit directly.
-// Serper.dev: free 2500 queries/month — serper.dev
+// ─── Reddit fetch — direct API (works locally + cloud with OAuth) ─────────────
 
-async function searchSerper(query) {
+async function fetchRedditDirect(query) {
+  const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=new&limit=10&type=link`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "OpportunityScanner/1.0",
+        Accept: "application/json",
+      },
+    });
+    if (res.status === 429) throw new Error("rate_limited");
+    if (!res.ok) return null; // null = blocked (403 from cloud IP)
+    const json = await res.json();
+    return (json?.data?.children || []).map((c) => c.data);
+  } catch (err) {
+    if (err.message === "rate_limited") throw err;
+    return null;
+  }
+}
+
+// ─── Reddit fetch — via Serper.dev (Google Search fallback for cloud IPs) ─────
+
+async function fetchRedditViaSerper(query) {
   const apiKey = process.env.SERPER_API_KEY;
   if (!apiKey) return [];
 
   const res = await fetch("https://google.serper.dev/search", {
     method: "POST",
-    headers: {
-      "X-API-KEY": apiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      q: `site:reddit.com ${query}`,
-      num: 8,
-      gl: "us",
-    }),
+    headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ q: `site:reddit.com ${query}`, num: 8, gl: "us" }),
   });
 
   if (!res.ok) return [];
   const data = await res.json();
 
-  // Extract Reddit thread URLs from organic results
-  return (data.organic || [])
+  const permalinks = (data.organic || [])
     .map((r) => r.link)
-    .filter((u) => u && u.includes("reddit.com/r/") && u.includes("/comments/"))
+    .filter((u) => u && u.includes("/comments/"))
     .map((u) => u.split("?")[0].replace(/\/$/, ""));
+
+  // Fetch each post's JSON individually
+  const posts = await Promise.all(
+    permalinks.map(async (url) => {
+      try {
+        const r = await fetch(`${url}.json?limit=1`, {
+          headers: { "User-Agent": "OpportunityScanner/1.0" },
+        });
+        if (!r.ok) return null;
+        const json = await r.json();
+        return json?.[0]?.data?.children?.[0]?.data || null;
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  return posts.filter(Boolean);
 }
 
-async function fetchRedditPost(permalink) {
-  try {
-    const res = await fetch(`${permalink}.json?limit=5`, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "application/json",
-      },
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json?.[0]?.data?.children?.[0]?.data || null;
-  } catch {
-    return null;
-  }
-}
+// ─── Unified fetch: try direct first, fall back to Serper ────────────────────
 
-async function fetchRedditResultsDirect(query) {
-  // Direct Reddit search — works locally, blocked on cloud IPs
-  const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=new&limit=10&type=link`;
-  try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "RedditOpportunityScanner/1.0" },
-    });
-    if (!res.ok) return null; // null signals "blocked"
-    const json = await res.json();
-    return (json?.data?.children || []).map((c) => c.data);
-  } catch {
-    return null;
-  }
-}
+let redditBlocked = false; // cache whether direct API is blocked on this instance
 
 async function fetchRedditResults(query) {
-  try {
-    // 1. Try direct Reddit API first (works locally)
-    const direct = await fetchRedditResultsDirect(query);
+  if (!redditBlocked) {
+    const direct = await fetchRedditDirect(query);
     if (direct !== null) return direct;
-
-    // 2. Fallback: Serper.dev → individual post JSON
-    const permalinks = await searchSerper(query);
-    const posts = await Promise.all(permalinks.map(fetchRedditPost));
-    return posts.filter(Boolean);
-  } catch (err) {
-    console.warn(`Fetch failed for query "${query}":`, err.message);
-    return [];
+    redditBlocked = true; // mark as blocked for remaining queries
+    console.log("Reddit direct API blocked — switching to Serper fallback");
   }
+  return fetchRedditViaSerper(query);
 }
 
 // ─── Deduplication ───────────────────────────────────────────────────────────
@@ -132,7 +139,7 @@ async function fetchRedditResults(query) {
 function deduplicatePosts(posts) {
   const seen = new Set();
   return posts.filter((p) => {
-    if (seen.has(p.id)) return false;
+    if (!p?.id || seen.has(p.id)) return false;
     seen.add(p.id);
     return true;
   });
@@ -146,74 +153,77 @@ function scoreThread(post, analysis) {
 
   if (analysis.intentType === "recommendation") score += 30;
   if (analysis.intentType === "problem") score += 20;
+  if (analysis.intentType === "question") score += 15;
   if (analysis.competitorMentioned) score += 15;
   if (ageHours < 72) score += 10;
   if ((post.num_comments || 0) < 5) score += 10;
   if (!analysis.brandMentioned) score += 10;
   if (analysis.antiPromoContext) score -= 20;
-  if (ageHours > 720) score -= 15; // >30 days
+  if (ageHours > 720) score -= 15;
   if (analysis.fullyAnswered) score -= 10;
 
   return Math.min(100, Math.max(0, score));
 }
 
-// ─── LLM analysis ────────────────────────────────────────────────────────────
+// ─── LLM thread analysis ──────────────────────────────────────────────────────
 
-async function analyzeThreads(threads, brand, description, competitors) {
+async function analyzeThreads(threads, brand, description, competitors, language) {
   if (threads.length === 0) return [];
 
   const threadList = threads
     .map(
       (t, i) =>
-        `[${i}] Title: ${t.title}\nSubreddit: r/${t.subreddit}\nSelftext: ${(t.selftext || "").slice(0, 400)}\nComments: ${t.num_comments}\nUpvotes: ${t.score}`
+        `[${i}] Title: ${t.title}\nSubreddit: r/${t.subreddit}\nBody: ${(t.selftext || "").slice(0, 400)}\nComments: ${t.num_comments} | Upvotes: ${t.score}`
     )
     .join("\n\n---\n\n");
 
   const prompt = `You are analyzing Reddit threads to find engagement opportunities for a brand.
 
 Brand: "${brand}"
-Brand description: ${description || "Not provided"}
-Competitors: ${competitors.length ? competitors.join(", ") : "None specified"}
+What it offers: ${description || "not provided"}
+Competitors: ${competitors.length ? competitors.join(", ") : "none"}
+Reply language: ${language}
 
-Analyze each thread below. Return a JSON array with one object per thread in this exact structure:
+For each thread, determine if this brand could naturally and helpfully engage.
+A thread is an "opportunity" if someone has a need, problem, or question that this brand solves — even if they don't mention the brand by name.
+
+Return a JSON array, one object per thread:
 {
   "index": <number>,
   "brandMentioned": <boolean>,
   "competitorMentioned": <boolean>,
   "intentType": <"recommendation"|"problem"|"complaint"|"question"|"praise"|"other">,
-  "relevanceScore": <0-100>,
+  "relevanceScore": <0-100, how relevant is this for the brand to engage?>,
   "shouldReply": <"yes"|"maybe"|"no">,
   "spamRisk": <"low"|"medium"|"high">,
-  "antiPromoContext": <boolean>,
-  "fullyAnswered": <boolean>,
-  "summary": <one sentence>,
-  "whyRelevant": <one sentence explaining opportunity>,
+  "antiPromoContext": <boolean — true if the thread explicitly discourages promotion>,
+  "fullyAnswered": <boolean — true if already thoroughly answered>,
+  "summary": <one sentence in ${language}>,
+  "whyRelevant": <one sentence explaining why this is an opportunity, in ${language}>,
   "suggestedAction": <"reply"|"monitor"|"ignore">,
-  "suggestedReply": <natural, helpful, non-salesy Reddit reply — or null if action is not "reply">
+  "suggestedReply": <helpful, natural Reddit reply in ${language} — or null if action is not "reply">
 }
 
-Rules for suggestedReply:
-- Sound like a genuine Reddit user, not a marketer
-- Lead with help or empathy, mention brand naturally if relevant
-- Max 3 sentences
+suggestedReply rules:
+- Sound like a genuine Redditor helping out, not a marketer
+- Lead with useful info, mention the brand naturally only if it genuinely fits
+- Max 3 sentences, in ${language}
 - null if shouldReply is "no"
 
-Threads:
+Threads to analyze:
 ${threadList}
 
-Return ONLY the JSON array, no other text.`;
+Return ONLY the JSON array.`;
 
   const message = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 4096,
-    system:
-      "You are a Reddit marketing analyst. Return only valid JSON arrays as instructed.",
+    system: "You are a Reddit community analyst. Return only valid JSON arrays.",
     messages: [{ role: "user", content: prompt }],
   });
 
   const raw = message.content[0].text.trim();
   try {
-    // Strip markdown code blocks if present
     const cleaned = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
     return JSON.parse(cleaned);
   } catch {
@@ -239,13 +249,17 @@ app.post("/scan", async (req, res) => {
     .map((c) => c.trim())
     .filter(Boolean);
 
-  try {
-    // 1. Generate queries
-    const queries = buildQueries(brand, description, competitorList);
+  // Reset per-request (important for serverless)
+  redditBlocked = false;
 
-    // 2. Fetch Reddit results in parallel (max 8 queries to stay fast)
+  try {
+    // 1. Generate smart queries with Claude
+    const queries = await generateQueries(brand, description, competitorList, language);
+    console.log("Generated queries:", queries);
+
+    // 2. Fetch Reddit results in parallel
     const fetchResults = await Promise.allSettled(
-      queries.slice(0, 8).map((q) => fetchRedditResults(q))
+      queries.slice(0, 10).map((q) => fetchRedditResults(q))
     );
     const allPosts = fetchResults.flatMap((r) =>
       r.status === "fulfilled" ? r.value : []
@@ -258,30 +272,30 @@ app.post("/scan", async (req, res) => {
       return res.status(200).json({
         results: [],
         subreddits: [],
-        queriesRun: queries.slice(0, 8).length,
+        queriesRun: queries.length,
+        queries,
         warning: !process.env.SERPER_API_KEY
-          ? "Reddit is blocking requests from this server. Add a free SERPER_API_KEY (serper.dev) to your Vercel environment variables to fix this."
-          : "No Reddit threads found for this brand. Try a broader brand name or add more competitors.",
+          ? "Reddit is blocking requests from this server. Add a free SERPER_API_KEY (serper.dev) to Vercel environment variables to fix this."
+          : "No threads found. Try adjusting your brand description to better describe the problem you solve.",
       });
     }
 
-    // 4. Analyze with Claude (cap at 20 threads for speed)
+    // 4. Analyze with Claude (cap at 20 threads)
     const postsToAnalyze = uniquePosts.slice(0, 20);
     const analyses = await analyzeThreads(
       postsToAnalyze,
       brand,
       description,
-      competitorList
+      competitorList,
+      language
     );
 
-    // 5. Merge scores and shape output
+    // 5. Build results
     const results = postsToAnalyze
       .map((post, i) => {
         const analysis = analyses.find((a) => a.index === i) || {};
         const score = scoreThread(post, analysis);
-        const ageHours = Math.round(
-          (Date.now() / 1000 - post.created_utc) / 3600
-        );
+        const ageHours = Math.round((Date.now() / 1000 - post.created_utc) / 3600);
 
         return {
           id: post.id,
@@ -318,14 +332,13 @@ app.post("/scan", async (req, res) => {
           {
             name: r.subreddit,
             url: r.subredditUrl,
-            threadCount: results.filter((x) => x.subreddit === r.subreddit)
-              .length,
+            threadCount: results.filter((x) => x.subreddit === r.subreddit).length,
           },
         ])
       ).values(),
     ].sort((a, b) => b.threadCount - a.threadCount);
 
-    res.json({ results, subreddits, queriesRun: queries.slice(0, 8).length });
+    res.json({ results, subreddits, queriesRun: queries.length, queries });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
