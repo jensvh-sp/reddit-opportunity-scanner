@@ -349,6 +349,12 @@
       <p id="errorMsg">Something went wrong</p>
     </div>
 
+    <div id="stateWarning" class="state-box" style="display:none">
+      <div class="icon">🚫</div>
+      <p id="warningMsg"></p>
+      <small>Add <strong>REDDIT_CLIENT_ID</strong> and <strong>REDDIT_CLIENT_SECRET</strong> to your Vercel environment variables to fix this.</small>
+    </div>
+
     <div id="stateResults" style="display:none">
       <!-- Stats -->
       <div class="stats" id="statsRow"></div>
@@ -403,6 +409,12 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Scan failed');
 
+      if (data.warning) {
+        document.getElementById('warningMsg').textContent = data.warning;
+        showState('warning');
+        return;
+      }
+
       allResults = data.results;
       renderSubreddits(data.subreddits);
       renderStats(data);
@@ -418,7 +430,7 @@
   }
 
   function showState(state) {
-    ['empty', 'loading', 'error', 'results'].forEach(s => {
+    ['empty', 'loading', 'error', 'warning', 'results'].forEach(s => {
       document.getElementById('state' + s.charAt(0).toUpperCase() + s.slice(1)).style.display = s === state ? '' : 'none';
     });
   }

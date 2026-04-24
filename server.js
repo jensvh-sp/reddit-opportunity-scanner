@@ -47,17 +47,59 @@ function buildQueries(brand, description, competitors) {
   return [...new Set(queries)]; // deduplicate
 }
 
+// ─── Reddit OAuth ────────────────────────────────────────────────────────────
+
+let redditToken = null;
+let redditTokenExpiry = 0;
+
+async function getRedditToken() {
+  if (redditToken && Date.now() < redditTokenExpiry) return redditToken;
+
+  const clientId = process.env.REDDIT_CLIENT_ID;
+  const clientSecret = process.env.REDDIT_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+
+  const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+  const res = await fetch("https://www.reddit.com/api/v1/access_token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${credentials}`,
+      "User-Agent": "RedditOpportunityScanner/1.0",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "grant_type=client_credentials",
+  });
+
+  if (!res.ok) return null;
+  const data = await res.json();
+  redditToken = data.access_token;
+  redditTokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
+  return redditToken;
+}
+
 // ─── Reddit fetch ────────────────────────────────────────────────────────────
 
 async function fetchRedditResults(query, language) {
-  const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=new&limit=10&type=link`;
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "RedditOpportunityScanner/1.0 (research tool)",
-      "Accept-Language": language || "en",
-    },
-  });
-  if (!res.ok) return [];
+  const token = await getRedditToken();
+
+  // Use OAuth API if credentials available, otherwise fall back to public API
+  const baseUrl = token
+    ? "https://oauth.reddit.com/search.json"
+    : "https://www.reddit.com/search.json";
+
+  const url = `${baseUrl}?q=${encodeURIComponent(query)}&sort=new&limit=10&type=link`;
+
+  const headers = {
+    "User-Agent": "RedditOpportunityScanner/1.0",
+    "Accept-Language": language || "en",
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    console.warn(`Reddit fetch failed for query "${query}": ${res.status}`);
+    return [];
+  }
   const json = await res.json();
   return (json?.data?.children || []).map((c) => c.data);
 }
@@ -188,6 +230,15 @@ app.post("/scan", async (req, res) => {
 
     // 3. Deduplicate
     const uniquePosts = deduplicatePosts(allPosts);
+
+    if (uniquePosts.length === 0) {
+      return res.status(200).json({
+        results: [],
+        subreddits: [],
+        queriesRun: queries.slice(0, 8).length,
+        warning: "Reddit returned no results. This usually means Reddit is blocking requests from this server's IP. Please add REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET environment variables (see README).",
+      });
+    }
 
     // 4. Analyze with Claude (cap at 20 threads for speed)
     const postsToAnalyze = uniquePosts.slice(0, 20);
