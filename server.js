@@ -214,21 +214,25 @@ function deduplicatePosts(posts) {
 }
 
 // ─── Opportunity scoring ─────────────────────────────────────────────────────
+// Claude's relevanceScore is the foundation — it already judges topical fit.
+// We only apply small bonuses/penalties for timing and engagement signals.
 
 function scoreThread(post, analysis) {
-  let score = 0;
+  // Start from Claude's relevance judgment (0-100)
+  let score = analysis.relevanceScore || 0;
+
   const ageHours = (Date.now() / 1000 - post.created_utc) / 3600;
 
-  if (analysis.intentType === "recommendation") score += 30;
-  if (analysis.intentType === "problem") score += 20;
-  if (analysis.intentType === "question") score += 15;
-  if (analysis.competitorMentioned) score += 15;
-  if (ageHours < 72) score += 10;
-  if ((post.num_comments || 0) < 5) score += 10;
-  if (!analysis.brandMentioned) score += 10;
-  if (analysis.antiPromoContext) score -= 20;
-  if (ageHours > 720) score -= 15;
-  if (analysis.fullyAnswered) score -= 10;
+  // Small bonuses for engagement opportunity signals
+  if (ageHours < 72) score += 8;                      // still fresh
+  if ((post.num_comments || 0) < 5) score += 5;       // low competition
+  if (analysis.competitorMentioned) score += 7;        // comparing options
+
+  // Penalties
+  if (analysis.antiPromoContext) score -= 25;
+  if (ageHours > 720) score -= 10;                     // >30 days old
+  if (analysis.fullyAnswered) score -= 15;             // already handled
+  if (analysis.suggestedAction === "ignore") score -= 30; // Claude says skip it
 
   return Math.min(100, Math.max(0, score));
 }
@@ -356,7 +360,7 @@ app.post("/scan", async (req, res) => {
       language
     );
 
-    // 5. Build results
+    // 5. Build results — filter out irrelevant threads immediately
     const results = postsToAnalyze
       .map((post, i) => {
         const analysis = analyses.find((a) => a.index === i) || {};
@@ -388,7 +392,20 @@ app.post("/scan", async (req, res) => {
           suggestedReply: analysis.suggestedReply || null,
         };
       })
+      // Drop anything Claude marked as ignore with low relevance — not worth showing
+      .filter((r) => r.suggestedAction !== "ignore" || r.relevanceScore >= 40)
       .sort((a, b) => b.score - a.score);
+
+    // If everything got filtered out, say so clearly
+    if (results.length === 0) {
+      return res.status(200).json({
+        results: [],
+        subreddits: [],
+        queriesRun: queries.length,
+        queries,
+        warning: "Geen relevante threads gevonden voor dit merk. Reddit heeft weinig recente discussies die aansluiten bij wat je aanbiedt. Probeer de beschrijving aan te passen of scan later opnieuw.",
+      });
+    }
 
     // 6. Collect unique subreddits
     const subreddits = [
