@@ -81,7 +81,64 @@ async function fetchRedditDirect(query) {
   }
 }
 
-// ─── Reddit fetch — via Serper.dev (Google Search fallback for cloud IPs) ─────
+// ─── Reddit fetch — via RSS feed (fallback for blocked cloud IPs) ─────────────
+// Reddit's RSS/Atom feeds are consumed by millions of RSS readers from
+// datacenter IPs and are far less aggressively blocked than the JSON API.
+
+function parseRedditRSS(xml) {
+  const entries = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)];
+  return entries.map((m) => {
+    const entry = m[1];
+    const title = (entry.match(/<title[^>]*>([\s\S]*?)<\/title>/) || [])[1]?.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1").trim() || "";
+    const link = (entry.match(/<link[^>]*href="([^"]+)"/) || [])[1] || "";
+    const updated = (entry.match(/<updated>([\s\S]*?)<\/updated>/) || [])[1] || "";
+    const content = (entry.match(/<content[^>]*>([\s\S]*?)<\/content>/) || [])[1] || "";
+    const category = (entry.match(/term="([^"]+)"/) || [])[1] || "";
+    const id = (entry.match(/<id>([\s\S]*?)<\/id>/) || [])[1] || "";
+
+    // Extract text snippet from HTML content
+    const selftext = content.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+
+    // Parse permalink from link
+    const permalinkMatch = link.match(/(\/r\/[^?#]+)/);
+    const permalink = permalinkMatch ? permalinkMatch[1] : "";
+
+    // Extract post ID from id field or permalink
+    const idMatch = (id + permalink).match(/comments\/([a-z0-9]+)/);
+    const postId = idMatch ? idMatch[1] : Math.random().toString(36).slice(2);
+
+    return {
+      id: postId,
+      title,
+      permalink,
+      subreddit: category,
+      selftext,
+      score: 0,
+      num_comments: 0,
+      created_utc: updated ? new Date(updated).getTime() / 1000 : Date.now() / 1000,
+    };
+  }).filter((p) => p.title && p.permalink);
+}
+
+async function fetchRedditViaRSS(query) {
+  const url = `https://www.reddit.com/search.rss?q=${encodeURIComponent(query)}&sort=new&limit=10&type=link`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "OpportunityScanner/1.0 RSS Reader",
+        Accept: "application/rss+xml, application/atom+xml, text/xml",
+      },
+    });
+    if (!res.ok) return null;
+    const xml = await res.text();
+    if (!xml.includes("<entry>")) return null;
+    return parseRedditRSS(xml);
+  } catch {
+    return null;
+  }
+}
+
+// ─── Reddit fetch — via Serper.dev (Google Search, optional) ─────────────────
 
 async function fetchRedditViaSerper(query) {
   const apiKey = process.env.SERPER_API_KEY;
@@ -120,17 +177,28 @@ async function fetchRedditViaSerper(query) {
   return posts.filter(Boolean);
 }
 
-// ─── Unified fetch: try direct first, fall back to Serper ────────────────────
+// ─── Unified fetch: JSON → RSS → Serper ──────────────────────────────────────
 
-let redditBlocked = false; // cache whether direct API is blocked on this instance
+let redditMode = "direct"; // "direct" | "rss" | "serper"
 
 async function fetchRedditResults(query) {
-  if (!redditBlocked) {
+  // Try direct JSON API
+  if (redditMode === "direct") {
     const direct = await fetchRedditDirect(query);
     if (direct !== null) return direct;
-    redditBlocked = true; // mark as blocked for remaining queries
-    console.log("Reddit direct API blocked — switching to Serper fallback");
+    console.log("Reddit JSON API blocked — trying RSS feed");
+    redditMode = "rss";
   }
+
+  // Try RSS feed
+  if (redditMode === "rss") {
+    const rss = await fetchRedditViaRSS(query);
+    if (rss !== null) return rss;
+    console.log("Reddit RSS also blocked — trying Serper");
+    redditMode = "serper";
+  }
+
+  // Last resort: Serper (if key available)
   return fetchRedditViaSerper(query);
 }
 
@@ -250,7 +318,7 @@ app.post("/scan", async (req, res) => {
     .filter(Boolean);
 
   // Reset per-request (important for serverless)
-  redditBlocked = false;
+  redditMode = "direct";
 
   try {
     // 1. Generate smart queries with Claude
@@ -274,9 +342,7 @@ app.post("/scan", async (req, res) => {
         subreddits: [],
         queriesRun: queries.length,
         queries,
-        warning: !process.env.SERPER_API_KEY
-          ? "Reddit is blocking requests from this server. Add a free SERPER_API_KEY (serper.dev) to Vercel environment variables to fix this."
-          : "No threads found. Try adjusting your brand description to better describe the problem you solve.",
+        warning: "No Reddit threads found. Reddit is blocking all requests from this server. Please try running the tool locally with 'npm start'.",
       });
     }
 
