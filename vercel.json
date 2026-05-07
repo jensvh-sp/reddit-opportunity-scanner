@@ -1,10 +1,11 @@
 {
   "version": 2,
-  "builds": [
-    { "src": "server.js", "use": "@vercel/node" }
-  ],
-  "routes": [
-    { "src": "/scan", "dest": "/api/scan.js" },
-    { "src": "/(.*)", "dest": "server.js" }
+  "functions": {
+    "api/scan.js": {
+      "runtime": "edge"
+    }
+  },
+  "rewrites": [
+    { "source": "/scan", "destination": "/api/scan" }
   ]
 }
