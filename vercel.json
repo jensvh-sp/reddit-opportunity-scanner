@@ -1,10 +1,4 @@
 {
-  "version": 2,
-  "functions": {
-    "api/scan.js": {
-      "runtime": "edge"
-    }
-  },
   "rewrites": [
     { "source": "/scan", "destination": "/api/scan" }
   ]
