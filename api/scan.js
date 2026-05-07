@@ -49,14 +49,16 @@ Return ONLY a JSON array of strings.`;
   }
 }
 
-// ─── Reddit fetch (runs on Cloudflare edge — not blocked) ────────────────────
+// ─── Reddit fetch via Cloudflare Worker proxy ────────────────────────────────
+// Reddit blocks Vercel IPs. We route through a Cloudflare Worker which uses
+// Cloudflare's IP pool — not blocked by Reddit.
+
+const REDDIT_PROXY = "https://reddit-proxy.jens-707.workers.dev";
 
 async function fetchRedditResults(query, timeRange = "month") {
-  const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=new&t=${timeRange}&limit=10&type=link`;
+  const url = `${REDDIT_PROXY}/?q=${encodeURIComponent(query)}&t=${timeRange}`;
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "OpportunityScanner/1.0" },
-    });
+    const res = await fetch(url);
     if (!res.ok) return [];
     const json = await res.json();
     return (json?.data?.children || []).map((c) => c.data);
