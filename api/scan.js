@@ -17,7 +17,7 @@ Competitors: ${competitors.length ? competitors.join(", ") : "none"}
 Language: ${language}
 
 Rules:
-- Generate exactly 12 queries total: 4 brand + 5 intent/opportunity + 3 competitor
+- Generate exactly 8 queries total: 3 brand + 3 intent/opportunity + 2 competitor
 - Intent queries should reflect real needs/problems this brand solves — do NOT include the brand name
 - Write queries as a real user would type them on Reddit (natural language)
 - Write queries in the specified language (${language})
@@ -33,7 +33,7 @@ Return ONLY a JSON array of strings.`;
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-5",
+      model: "claude-haiku-4-5",
       max_tokens: 512,
       messages: [{ role: "user", content: prompt }],
     }),
@@ -148,8 +148,8 @@ Return ONLY the JSON array.`;
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-5",
-      max_tokens: 4096,
+      model: "claude-haiku-4-5",
+      max_tokens: 3000,
       system: "You are a Reddit community analyst. Return only valid JSON arrays.",
       messages: [{ role: "user", content: prompt }],
     }),
@@ -190,7 +190,7 @@ export default async function handler(req) {
 
     // 2. Fetch Reddit (from Cloudflare edge — not blocked)
     const fetchResults = await Promise.allSettled(
-      queries.slice(0, 10).map((q) => fetchRedditResults(q, timeRange))
+      queries.slice(0, 8).map((q) => fetchRedditResults(q, timeRange))
     );
     const allPosts = fetchResults.flatMap((r) =>
       r.status === "fulfilled" ? r.value : []
@@ -212,8 +212,8 @@ export default async function handler(req) {
       );
     }
 
-    // 4. Analyze with Claude
-    const postsToAnalyze = uniquePosts.slice(0, 20);
+    // 4. Analyze with Claude (cap at 12 to stay within edge timeout)
+    const postsToAnalyze = uniquePosts.slice(0, 12);
     const analyses = await analyzeThreads(postsToAnalyze, brand, description, competitorList, language);
 
     // 5. Build + filter results
