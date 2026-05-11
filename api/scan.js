@@ -116,30 +116,34 @@ What it offers: ${description || "not provided"}
 Competitors: ${competitors.length ? competitors.join(", ") : "none"}
 Target language: ${language}
 
-STEP 1 — LANGUAGE FILTER (hard rule, no exceptions):
-Reddit is global. Many threads will be in English, Croatian, German, French, etc.
-- If the target language is "nl" (Dutch/Flemish): only process Dutch or Flemish threads. Threads in English, Croatian, German, French or any other language → relevanceScore: 0, suggestedAction: "ignore".
-- If the target language is "en" (English): only process English threads. Other languages → relevanceScore: 0, suggestedAction: "ignore".
-- If the target language is "fr" (French): only process French threads. Other languages → relevanceScore: 0, suggestedAction: "ignore".
-- For any other language code: match threads written in that language only. All other languages → relevanceScore: 0, suggestedAction: "ignore".
-- Exception: if a thread is bilingual and includes the target language prominently, it may qualify.
+STEP 1 — LANGUAGE FILTER:
+English threads are ALWAYS allowed, regardless of target language — English is Reddit's dominant language and Dutch/French/etc. users regularly post in English about topics relevant to them.
 
-STEP 2 — BRAND RELEVANCE (use the brand description as your guide):
-First, internalize what this brand actually does and who it serves based on the description above.
-A thread is relevant if:
+What to REJECT (relevanceScore: 0, suggestedAction: "ignore"):
+- If target language is "nl": reject threads written in German, French, Spanish, Croatian, Italian, Portuguese or any non-Dutch, non-English language.
+- If target language is "fr": reject threads written in German, Dutch, Spanish, Croatian, Italian, Portuguese or any non-French, non-English language.
+- If target language is "en": reject threads clearly written in a non-English language.
+- For any other target language: reject threads that are neither English nor the target language.
+
+In short: keep English + keep the target language. Reject everything else.
+
+STEP 2 — BRAND RELEVANCE (use the brand description as your primary guide):
+First, internalize what this brand actually does, what problems it solves, and who its customers are — based on the description above. Then use that understanding to judge every thread.
+
+A thread is relevant if ANY of these are true:
 - It mentions the brand or its direct competitors by name
-- Someone is asking for exactly the kind of service/product this brand provides
-- Someone has a pain point that this brand specifically addresses (based on the description)
-- It's about the specific niche/sector this brand operates in (not just vaguely related)
+- Someone is asking for advice, recommendations, or comparisons in this brand's space
+- Someone has a problem or need that this brand specifically addresses
+- It discusses the sector/niche this brand operates in, from a buyer or user perspective
 
-Do NOT mark as relevant just because the topic is broadly in the same industry. The thread must match what THIS brand specifically does.
+Be generous — give threads the benefit of the doubt if they touch on the brand's space. Only mark "ignore" if the topic is genuinely unrelated to what this brand does.
 
 For relevanceScore:
-- 0: wrong language OR completely off-topic
-- 10-30: same broad industry but not a match for this brand's specific offering
-- 30-50: related topic, might be worth monitoring
-- 50-70: clear match — someone needs what this brand offers
-- 70-100: perfect match — brand mentioned, or someone is actively looking for exactly this
+- 0: wrong language (per Step 1) OR completely off-topic
+- 20-40: same broad sector, loosely related
+- 40-60: clear connection — someone is discussing a need this brand addresses
+- 60-80: strong match — someone is actively asking for what this brand offers
+- 80-100: perfect — brand/competitor mentioned directly, or someone is searching for exactly this
 
 Return a JSON array, one object per thread:
 {
@@ -278,7 +282,7 @@ export default async function handler(req) {
           suggestedReply: analysis.suggestedReply || null,
         };
       })
-      .filter((r) => r.relevanceScore >= 30)
+      .filter((r) => r.relevanceScore >= 20)
       .sort((a, b) => b.score - a.score);
 
     if (results.length === 0) {
