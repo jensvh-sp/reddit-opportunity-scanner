@@ -17,11 +17,11 @@ Competitors: ${competitors.length ? competitors.join(", ") : "none"}
 Language: ${language}
 
 Rules:
-- Generate exactly 8 queries total: 3 brand + 3 intent/opportunity + 2 competitor
+- Generate exactly 10 queries total: 3 brand + 4 intent/opportunity + 3 competitor
 - Intent queries should reflect real needs/problems this brand solves — do NOT include the brand name
-- Write queries as a real user would type them on Reddit (natural language)
-- Write queries in the specified language (${language})
 - Keep queries short: 2-5 words each
+- IMPORTANT: Since Reddit is mostly English, write 6 queries in English and 4 in ${language}
+- Mix both languages to maximize reach across subreddits
 
 Return ONLY a JSON array of strings.`;
 
@@ -180,7 +180,7 @@ export default async function handler(req) {
     return new Response("Method not allowed", { status: 405 });
   }
 
-  const { brand, language = "en", description = "", competitors = "", timeRange = "month" } =
+  const { brand, language = "en", description = "", competitors = "", timeRange = "year" } =
     await req.json();
 
   if (!brand) {
