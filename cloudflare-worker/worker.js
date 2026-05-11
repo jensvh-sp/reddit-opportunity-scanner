@@ -3,8 +3,7 @@ export default {
     const url = new URL(request.url);
     const q = url.searchParams.get("q") || "";
     const t = url.searchParams.get("t") || "month";
-    const limit = Math.min(parseInt(url.searchParams.get("limit") || "25", 10), 25);
-    const redditUrl = `https://www.reddit.com/search.json?q=${encodeURIComponent(q)}&sort=new&t=${t}&limit=${limit}&type=link&raw_json=1`;
+    const redditUrl = `https://www.reddit.com/search.json?q=${encodeURIComponent(q)}&sort=new&t=${t}&limit=10&type=link&raw_json=1`;
 
     const res = await fetch(redditUrl, {
       headers: {
