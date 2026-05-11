@@ -5,16 +5,18 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.18.2",
-    "wrangler": "^4.90.0"
+    "express": "^4.18.2"
   },
   "devDependencies": {
-    "vercel": "^52.0.0"
+    "vercel": "^52.0.0",
+    "wrangler": "^4.90.0"
   }
 }
