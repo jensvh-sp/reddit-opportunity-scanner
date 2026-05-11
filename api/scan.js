@@ -87,10 +87,10 @@ function scoreThread(post, analysis) {
   if (ageHours < 72) score += 8;
   if ((post.num_comments || 0) < 5) score += 5;
   if (analysis.competitorMentioned) score += 7;
-  if (analysis.antiPromoContext) score -= 25;
+  if (analysis.antiPromoContext) score -= 15;
   if (ageHours > 720) score -= 10;
-  if (analysis.fullyAnswered) score -= 15;
-  if (analysis.suggestedAction === "ignore") score -= 30;
+  if (analysis.fullyAnswered) score -= 10;
+  if (analysis.suggestedAction === "ignore") score -= 15;
 
   return Math.min(100, Math.max(0, score));
 }
@@ -114,7 +114,15 @@ What it offers: ${description || "not provided"}
 Competitors: ${competitors.length ? competitors.join(", ") : "none"}
 Reply language: ${language}
 
-A thread is an "opportunity" if someone has a need, problem, or question this brand solves — even without mentioning the brand.
+Be BROAD in what you consider relevant. A thread counts as an opportunity if:
+- It mentions the brand or competitors
+- It's about the general topic/sector this brand operates in
+- Someone is asking for advice, recommendations or help in this space
+- Someone has a problem that this type of brand could solve
+
+Give the benefit of the doubt — it's better to show a thread that might be useful than to miss a real opportunity. Only mark as "ignore" if the topic is completely unrelated to the brand's sector.
+
+For relevanceScore: be generous. A thread in the same general sector should score at least 30-40. A thread with a direct need should score 60+.
 
 Return a JSON array, one object per thread:
 {
@@ -247,7 +255,7 @@ export default async function handler(req) {
           suggestedReply: analysis.suggestedReply || null,
         };
       })
-      .filter((r) => r.suggestedAction !== "ignore" || r.relevanceScore >= 40)
+      .filter((r) => r.relevanceScore >= 20)
       .sort((a, b) => b.score - a.score);
 
     if (results.length === 0) {
