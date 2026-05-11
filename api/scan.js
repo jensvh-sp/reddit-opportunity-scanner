@@ -6,22 +6,24 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 // ─── Query generation via Claude ─────────────────────────────────────────────
 
 async function generateQueries(brand, description, competitors, language) {
-  const prompt = `You are a Reddit marketing expert. Generate Reddit search queries to find:
-1. Threads that mention the brand (brand awareness)
-2. Threads where someone has a problem or need that this brand solves (opportunities)
-3. Threads comparing or asking about competitors
+  const prompt = `You are a Reddit marketing expert. Generate Reddit search queries to find threads relevant to this brand.
 
 Brand: "${brand}"
 Description: ${description || "not provided"}
 Competitors: ${competitors.length ? competitors.join(", ") : "none"}
-Language: ${language}
+Target language: ${language}
+
+First, deeply understand what this brand does and what problems it solves based on the description. Then generate queries that will surface threads where people genuinely need what this brand offers.
 
 Rules:
 - Generate exactly 10 queries total: 3 brand + 4 intent/opportunity + 3 competitor
-- Intent queries should reflect real needs/problems this brand solves — do NOT include the brand name
+- Intent queries should target the SPECIFIC problems/needs this brand solves — derived from the description, NOT just the brand name
 - Keep queries short: 2-5 words each
-- IMPORTANT: Since Reddit is mostly English, write 6 queries in English and 4 in ${language}
-- Mix both languages to maximize reach across subreddits
+- Language split: write 5 queries in English AND 5 queries in ${language}
+  - If ${language} is "nl": write 5 in Dutch/Flemish + 5 in English
+  - If ${language} is "en": write all 10 in English
+  - For other languages: 5 in that language + 5 in English
+- The Dutch/target-language queries are critical — they surface threads Claude will prioritize
 
 Return ONLY a JSON array of strings.`;
 
@@ -107,22 +109,37 @@ async function analyzeThreads(threads, brand, description, competitors, language
     )
     .join("\n\n---\n\n");
 
-  const prompt = `You are analyzing Reddit threads to find engagement opportunities for a brand.
+  const prompt = `You are analyzing Reddit threads to find engagement opportunities for a brand. Use the brand description as your PRIMARY lens — understand deeply what problem this brand solves, who their customers are, and what their value proposition is. Then apply that understanding to judge every thread.
 
 Brand: "${brand}"
 What it offers: ${description || "not provided"}
 Competitors: ${competitors.length ? competitors.join(", ") : "none"}
-Reply language: ${language}
+Target language: ${language}
 
-Be BROAD in what you consider relevant. A thread counts as an opportunity if:
-- It mentions the brand or competitors
-- It's about the general topic/sector this brand operates in
-- Someone is asking for advice, recommendations or help in this space
-- Someone has a problem that this type of brand could solve
+STEP 1 — LANGUAGE FILTER (hard rule, no exceptions):
+Reddit is global. Many threads will be in English, Croatian, German, French, etc.
+- If the target language is "nl" (Dutch/Flemish): only process Dutch or Flemish threads. Threads in English, Croatian, German, French or any other language → relevanceScore: 0, suggestedAction: "ignore".
+- If the target language is "en" (English): only process English threads. Other languages → relevanceScore: 0, suggestedAction: "ignore".
+- If the target language is "fr" (French): only process French threads. Other languages → relevanceScore: 0, suggestedAction: "ignore".
+- For any other language code: match threads written in that language only. All other languages → relevanceScore: 0, suggestedAction: "ignore".
+- Exception: if a thread is bilingual and includes the target language prominently, it may qualify.
 
-Give the benefit of the doubt — it's better to show a thread that might be useful than to miss a real opportunity. Only mark as "ignore" if the topic is completely unrelated to the brand's sector.
+STEP 2 — BRAND RELEVANCE (use the brand description as your guide):
+First, internalize what this brand actually does and who it serves based on the description above.
+A thread is relevant if:
+- It mentions the brand or its direct competitors by name
+- Someone is asking for exactly the kind of service/product this brand provides
+- Someone has a pain point that this brand specifically addresses (based on the description)
+- It's about the specific niche/sector this brand operates in (not just vaguely related)
 
-For relevanceScore: be generous. A thread in the same general sector should score at least 30-40. A thread with a direct need should score 60+.
+Do NOT mark as relevant just because the topic is broadly in the same industry. The thread must match what THIS brand specifically does.
+
+For relevanceScore:
+- 0: wrong language OR completely off-topic
+- 10-30: same broad industry but not a match for this brand's specific offering
+- 30-50: related topic, might be worth monitoring
+- 50-70: clear match — someone needs what this brand offers
+- 70-100: perfect match — brand mentioned, or someone is actively looking for exactly this
 
 Return a JSON array, one object per thread:
 {
@@ -255,7 +272,7 @@ export default async function handler(req) {
           suggestedReply: analysis.suggestedReply || null,
         };
       })
-      .filter((r) => r.relevanceScore >= 20)
+      .filter((r) => r.relevanceScore >= 30)
       .sort((a, b) => b.score - a.score);
 
     if (results.length === 0) {
