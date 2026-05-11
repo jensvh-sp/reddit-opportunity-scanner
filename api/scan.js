@@ -58,7 +58,7 @@ Return ONLY a JSON array of strings.`;
 const REDDIT_PROXY = "https://reddit-proxy.jens-707.workers.dev";
 
 async function fetchRedditResults(query, timeRange = "month") {
-  const url = `${REDDIT_PROXY}/?q=${encodeURIComponent(query)}&t=${timeRange}`;
+  const url = `${REDDIT_PROXY}/?q=${encodeURIComponent(query)}&t=${timeRange}&limit=25`;
   try {
     const res = await fetch(url);
     if (!res.ok) return [];
@@ -99,13 +99,13 @@ function scoreThread(post, analysis) {
 
 // ─── LLM analysis ────────────────────────────────────────────────────────────
 
-async function analyzeThreads(threads, brand, description, competitors, language) {
+async function analyzeThreads(threads, brand, description, competitors, language, indexOffset = 0) {
   if (threads.length === 0) return [];
 
   const threadList = threads
     .map(
       (t, i) =>
-        `[${i}] Title: ${t.title}\nSubreddit: r/${t.subreddit}\nBody: ${(t.selftext || "").slice(0, 400)}\nComments: ${t.num_comments} | Upvotes: ${t.score}`
+        `[${i + indexOffset}] Title: ${t.title}\nSubreddit: r/${t.subreddit}\nBody: ${(t.selftext || "").slice(0, 400)}\nComments: ${t.num_comments} | Upvotes: ${t.score}`
     )
     .join("\n\n---\n\n");
 
@@ -213,9 +213,9 @@ export default async function handler(req) {
     // 1. Generate queries
     const queries = await generateQueries(brand, description, competitorList, language);
 
-    // 2. Fetch Reddit (from Cloudflare edge — not blocked)
+    // 2. Fetch Reddit (from Cloudflare edge — not blocked) — all 10 queries, 25 results each
     const fetchResults = await Promise.allSettled(
-      queries.slice(0, 8).map((q) => fetchRedditResults(q, timeRange))
+      queries.map((q) => fetchRedditResults(q, timeRange))
     );
     const allPosts = fetchResults.flatMap((r) =>
       r.status === "fulfilled" ? r.value : []
@@ -237,9 +237,15 @@ export default async function handler(req) {
       );
     }
 
-    // 4. Analyze with Claude (cap at 12 to stay within edge timeout)
-    const postsToAnalyze = uniquePosts.slice(0, 12);
-    const analyses = await analyzeThreads(postsToAnalyze, brand, description, competitorList, language);
+    // 4. Analyze with Claude — up to 25 posts in two parallel batches to stay within timeout
+    const postsToAnalyze = uniquePosts.slice(0, 25);
+    const batch1 = postsToAnalyze.slice(0, 13);
+    const batch2 = postsToAnalyze.slice(13);
+    const [analyses1, analyses2] = await Promise.all([
+      analyzeThreads(batch1, brand, description, competitorList, language, 0),
+      analyzeThreads(batch2, brand, description, competitorList, language, 13),
+    ]);
+    const analyses = [...analyses1, ...analyses2];
 
     // 5. Build + filter results
     const results = postsToAnalyze
